@@ -1,0 +1,23 @@
+# Latest LangChain and Dependencies (0.3+ compatible)
+langchain
+langchain-openai
+langchain-core
+langchain-community
+
+# FastAPI for Academic Chatbot
+fastapi
+uvicorn[standard]
+pydantic
+
+# Streamlit for AI Interviewer
+streamlit
+
+# OpenAI
+openai
+
+# Utilities
+python-dotenv
+requests
+
+# Optional but recommended
+httpx
