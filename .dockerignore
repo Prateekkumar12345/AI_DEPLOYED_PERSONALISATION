@@ -1,0 +1,17 @@
+# Environment and secrets (pass at runtime)
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Optional: exclude shared_data if you mount it as a volume instead
+# shared_data/
