@@ -37,7 +37,8 @@ logging.basicConfig(level=logging.INFO)
 # ============================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "placeholder-key")
-EXTERNAL_DB_API_URL = os.getenv("EXTERNAL_DB_API_URL", "http://3.7.255.54:3003")
+# Strip whitespace. If backend serves /db at root, use base without /api (e.g. http://3.7.255.54:3003).
+EXTERNAL_DB_API_URL = (os.getenv("EXTERNAL_DB_API_URL", "http://3.7.255.54:3003") or "").strip()
 logger = logging.getLogger(__name__)
 
 # ============================
@@ -53,7 +54,7 @@ class ExternalDBAPIClient:
     """Client for external database API - stores user profiles and personalization reports"""
     
     def __init__(self, base_url: str = None):
-        self.base_url = (base_url or EXTERNAL_DB_API_URL).rstrip("/")
+        self.base_url = (base_url or EXTERNAL_DB_API_URL or "").strip().rstrip("/")
         self.timeout = 30
     
     def update_user_profile(self, username: str, profile_data: dict) -> bool:
@@ -807,8 +808,8 @@ class PersonalizationEngine:
         # Generate recommendations
         profile.recommendations = self.personality_analyzer.generate_recommendations(profile)
         
-        # Save to external API (PUT /db/user-profile)
-        self.external_db.update_user_profile(username, profile.dict())
+        # Save to external API; SharedDatabase tries API then falls back to local user_profiles.json
+        self.shared_db.save_user_profile(username, profile.dict())
         
         return profile
     
@@ -861,8 +862,8 @@ class PersonalizationEngine:
         
         profile.recommendations = self.personality_analyzer.generate_recommendations(profile)
         
-        # Save to external API (PUT /db/user-profile)
-        self.external_db.update_user_profile(username, profile.dict())
+        # Save to external API; SharedDatabase tries API then falls back to local user_profiles.json
+        self.shared_db.save_user_profile(username, profile.dict())
         
         return {
             "success": True,

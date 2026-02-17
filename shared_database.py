@@ -41,7 +41,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-EXTERNAL_DB_API_URL = os.getenv("EXTERNAL_DB_API_URL", "http://3.7.255.54:3003")
+# Strip whitespace; API docs use base without /api (routes are /db/...). Use /api only if your backend is mounted there.
+EXTERNAL_DB_API_URL = (os.getenv("EXTERNAL_DB_API_URL", "http://3.7.255.54:3003") or "").strip()
 USE_EXTERNAL_API = os.getenv("USE_EXTERNAL_API", "true").lower() in ("true", "1", "yes")
 DEFAULT_TIMEOUT = 15
 
@@ -115,7 +116,7 @@ class SharedDatabase:
 
     def __init__(self, storage_dir: str = None):
         self.storage_dir_str = storage_dir or "shared_data"
-        self.base_url = EXTERNAL_DB_API_URL.rstrip("/")
+        self.base_url = (EXTERNAL_DB_API_URL or "").strip().rstrip("/")
         self._local = LocalStorageBackend(self.storage_dir_str)
         self._use_external = USE_EXTERNAL_API and requests is not None
 
@@ -494,11 +495,16 @@ class SharedDatabase:
             "username": username,
             "profile": {**profile_data, "updated_at": datetime.now().isoformat()},
         }
+        path = _path("user-profile")
         # Try PUT first (update existing); fall back to POST (create new)
-        ok = self._put(_path("user-profile"), payload, params={"username": username})
+        ok = self._put(path, payload, params={"username": username})
         if not ok:
-            ok = self._post(_path("user-profile"), payload) is not None
+            ok = self._post(path, payload) is not None
         if not ok:
+            logger.info(
+                f"user-profile not stored on external API – using local file | "
+                f"URL: {self.base_url}{path} | Check EXTERNAL_DB_API_URL (use base without /api if backend serves /db at root)"
+            )
             profiles = self._local._load_json(self._local.profiles_file)
             profiles[username] = {
                 "username": username,

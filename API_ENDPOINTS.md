@@ -30,12 +30,15 @@ The SharedDatabase also calls these endpoints for reads. If your backend uses di
 
 ## Configuration
 
-Set in `.env`:
+Set in `.env` (no spaces around `=`):
 ```
 EXTERNAL_DB_API_URL=http://3.7.255.54:3003
 USE_EXTERNAL_API=true   # Set to false to skip API and use local storage only
 API_PATH_PREFIX=db      # Path prefix; use empty string if your API uses /interaction instead of /db/interaction
 ```
+
+**If user profiles or personalization reports are not stored on the external API:**  
+Use the base URL **without** `/api` (e.g. `http://3.7.255.54:3003`). The app calls `/db/user-profile` and `/db/personalization-report`; if your backend serves these at the root (e.g. `http://host:3003/db/user-profile`), do not add `/api` to the base URL. Only add `/api` if your backend is mounted under `/api` (e.g. `http://host:3003/api/db/user-profile`).
 
 ## Fallback Behavior
 
