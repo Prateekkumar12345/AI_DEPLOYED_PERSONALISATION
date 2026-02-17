@@ -11,7 +11,8 @@ pydantic
 
 # Streamlit for AI Interviewer
 streamlit
-
+python-multipart
+PyPDF2
 # OpenAI
 openai
 
