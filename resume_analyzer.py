@@ -1,7 +1,7 @@
-
 """
 AI Resume Analyzer with Comprehensive Features & Three-Layer Validation
 This version combines robust resume analysis with extensive feature tracking
+UPDATED: Role-specific analysis with honest scoring and mismatch detection
 """
 
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
@@ -140,10 +140,10 @@ class ImprovementPlan(BaseModel):
     medium: List[str] = Field(default_factory=list, description="Medium priority improvements")
 
 class JobMarketAnalysis(BaseModel):
-    role_compatibility: str = Field(description="Compatibility with target role")
-    market_positioning: str = Field(description="Position in job market")
-    career_advancement: str = Field(description="Career advancement opportunities")
-    skill_development: str = Field(description="Skill development recommendations")
+    role_compatibility: str = Field(description="Compatibility with target role: Low / Moderate / High")
+    market_positioning: str = Field(description="Position in job market for this specific role")
+    career_advancement: str = Field(description="Career advancement opportunities specific to target role")
+    skill_development: str = Field(description="Skill development recommendations for target role")
 
 class AIInsights(BaseModel):
     overall_score: int = Field(description="Overall AI-determined score")
@@ -565,7 +565,7 @@ class JobSearchService:
 # ===== RESUME ANALYZER =====
 
 class HighPerformanceLangChainAnalyzer:
-    """High-performance AI analyzer with guaranteed standard JSON output"""
+    """High-performance AI analyzer with guaranteed standard JSON output and role-specific evaluation"""
     
     def __init__(self, openai_api_key: str):
         self.llm = ChatOpenAI(
@@ -583,36 +583,122 @@ class HighPerformanceLangChainAnalyzer:
         self._setup_analysis_chain()
     
     def _setup_analysis_chain(self):
-        """Setup the analysis chain using LCEL"""
+        """Setup the analysis chain using LCEL with strict role-specific evaluation"""
         
         analysis_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert resume analyzer. Analyze the resume comprehensively for the target role.
+            ("system", """You are an expert resume analyst and career counselor. Your ONLY job is to evaluate how well this resume fits the TARGET ROLE provided by the user.
 
-YOU MUST provide a complete JSON response with ALL of the following sections:
+=====================================
+MANDATORY ROLE-SPECIFIC EVALUATION RULES — THESE OVERRIDE EVERYTHING ELSE
+=====================================
 
-1. PROFESSIONAL PROFILE (experience_level, technical_skills_count, project_portfolio_size, achievement_metrics, technical_sophistication)
-2. CONTACT PRESENTATION (email_address, phone_number, education, resume_length, action_verbs)
-3. DETAILED SCORING with these exact sections (use snake_case keys):
-   - "contact_information" (score, max_score, percentage, details)
-   - "technical_skills" (score, max_score, percentage, details)
-   - "experience_quality" (score, max_score, percentage, details)
-   - "quantified_achievements" (score, max_score, percentage, details)
-   - "content_optimization" (score, max_score, percentage, details)
-4. STRENGTHS ANALYSIS - Provide at least 5 strengths
-5. WEAKNESSES ANALYSIS - Provide at least 5 weaknesses
-6. IMPROVEMENT PLAN (critical, high, medium lists)
-7. JOB MARKET ANALYSIS (role_compatibility, market_positioning, career_advancement, skill_development)
-8. overall_score (0-100)
-9. recommendation_level
+1. TARGET ROLE IS THE LENS FOR ALL ANALYSIS
+   Every strength, weakness, score, and recommendation MUST be evaluated ONLY through the lens of the target role.
+   - Target role = "Dancer" → evaluate dance training, performance experience, choreography, stage presence, physical conditioning, audition history, dance styles mastered.
+   - Target role = "Software Engineer" → evaluate coding skills, system design, projects, CS fundamentals, frameworks.
+   - Target role = "Marketing Manager" → evaluate campaign management, analytics, brand strategy, copywriting, market research.
+   NEVER analyze skills that are irrelevant to the target role as strengths.
+
+2. HONEST SCORING — DO NOT INFLATE SCORES
+   The overall_score (0–100) MUST honestly reflect how qualified this candidate is for the TARGET ROLE:
+   - 0–20%   → Completely mismatched background, zero relevant experience
+   - 21–40%  → Severe mismatch, only very minor transferable skills exist
+   - 41–55%  → Partial mismatch, some transferable soft skills but missing core requirements
+   - 56–70%  → Moderate fit, has some relevant skills but lacks key requirements
+   - 71–85%  → Good fit, meets most requirements with minor gaps
+   - 86–100% → Excellent fit, strong match for the role
+
+   EXAMPLES OF CORRECT SCORING:
+   - CS/Engineering resume for "Dancer" role → Score: 10–25 (no dance background)
+   - Marketing resume for "Data Scientist" role → Score: 20–35 (lacks technical skills)
+   - Software Engineer resume for "Software Engineer" role → Score depends on actual skills
+
+3. STRENGTHS ANALYSIS — ROLE-RELEVANT ONLY
+   List ONLY strengths that are DIRECTLY relevant or transferable to the target role.
+   - For "Dancer": Valid strengths = dance training, performance experience, flexibility, rhythm, stage presence
+   - For "Dancer": INVALID strengths = "Diverse Technical Skills", "Machine Learning Knowledge", "Python proficiency"
+   - If the candidate has NO relevant strengths, list only genuine transferable soft skills (discipline, teamwork, communication) and clearly label them as "transferable soft skills, not role-specific"
+   - Each strength entry's "why_its_strong" and "ats_benefit" fields MUST reference the target role explicitly
+
+4. WEAKNESSES ANALYSIS — CALL OUT THE MISMATCH FIRST
+   If the resume background does not match the target role, the FIRST and MOST CRITICAL weakness MUST be the background mismatch itself.
+   - Example for CS resume + Dancer role: weakness = "No dance training or performance experience", fix_priority = "CRITICAL"
+   - List other role-specific gaps after the primary mismatch
+   - Be specific about WHAT is missing for the target role (e.g., "No choreography portfolio", "Missing formal dance school training")
+
+5. IMPROVEMENT PLAN — TARGET ROLE SPECIFIC
+   All improvement suggestions MUST be actionable steps toward getting the target role:
+   - For "Dancer": "Enroll in a formal dance academy", "Build a video performance portfolio", "Attend local auditions", "Get certified in specific dance styles"
+   - For "Software Engineer": "Add GitHub projects", "Contribute to open source", "Get AWS certification"
+   - NEVER suggest generic improvements that don't help with the target role
+
+6. JOB MARKET ANALYSIS — HONEST COMPATIBILITY
+   - role_compatibility: Set to "Low", "Moderate", or "High" based on actual fit
+   - A mismatched resume MUST get "Low" compatibility — do not soften this
+   - market_positioning: Describe the candidate's actual position in the target role's job market
+   - career_advancement: Describe the realistic path to break into the target role
+   - skill_development: List the most critical skills/training needed for the target role
+
+7. DETAILED SCORING — SCORE AGAINST ROLE REQUIREMENTS
+   Each scoring category should reflect performance against WHAT THE TARGET ROLE NEEDS:
+   - contact_information: Standard (same for all roles)
+   - technical_skills: Score based on skills RELEVANT TO TARGET ROLE only
+   - experience_quality: Score based on experience IN OR RELATED TO TARGET ROLE only
+   - quantified_achievements: Score based on achievements RELEVANT TO TARGET ROLE
+   - content_optimization: Score based on how well the resume is optimized FOR THE TARGET ROLE
+
+TARGET ROLE: {target_role}
 
 {format_instructions}
 
-CRITICAL: Return ONLY valid JSON matching the exact structure specified. No additional text."""),
+FINAL REMINDER: Return ONLY valid JSON. Be honest. Be role-specific. Do not inflate scores. A candidate deserves accurate feedback to make real career decisions."""),
             ("human", "Target Role: {target_role}\n\nResume Content:\n{resume_text}")
         ]).partial(format_instructions=self.output_parser.get_format_instructions())
         
         self.analysis_chain = analysis_prompt | self.llm | StrOutputParser()
     
+    async def _check_role_mismatch(self, resume_text: str, target_role: str) -> dict:
+        """
+        Quick pre-check to detect obvious role-resume mismatches.
+        Returns mismatch metadata that is attached to the final response.
+        """
+        prompt = f"""You are a career advisor. Assess whether this resume's background is relevant to the target role.
+
+Target Role: {target_role}
+Resume Snippet (first 1500 chars): {resume_text[:1500]}
+
+Be honest and specific. If the candidate's background is completely unrelated to the target role, say so clearly.
+
+Respond with JSON only — no extra text:
+{{
+  "is_relevant": true or false,
+  "compatibility": "Low" or "Moderate" or "High",
+  "candidate_background": "One sentence describing what field/domain this resume is actually from",
+  "target_role_requirements": "One sentence describing what the target role actually needs",
+  "mismatch_reason": "One sentence explaining the gap (or 'Good match' if compatible)",
+  "estimated_score_range": "e.g. 10-25 or 60-75"
+}}"""
+
+        try:
+            response = await self.llm.ainvoke(prompt)
+            text = response.content if hasattr(response, 'content') else str(response)
+            json_match = re.search(r'\{.*?\}', text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                logger.info(f"Role mismatch check: compatibility={result.get('compatibility')}, is_relevant={result.get('is_relevant')}")
+                return result
+        except Exception as e:
+            logger.warning(f"Role mismatch check failed: {e}")
+        
+        return {
+            "is_relevant": True,
+            "compatibility": "Unknown",
+            "candidate_background": "Could not assess",
+            "target_role_requirements": "Could not assess",
+            "mismatch_reason": "Assessment unavailable",
+            "estimated_score_range": "N/A"
+        }
+
     def _get_standard_response_template(self, target_role: str, word_count: int) -> Dict[str, Any]:
         """Returns the standard response structure"""
         return {
@@ -637,7 +723,8 @@ CRITICAL: Return ONLY valid JSON matching the exact structure specified. No addi
                 "medium": []
             },
             "job_market_analysis": {},
-            "ai_insights": {}
+            "ai_insights": {},
+            "role_fit_assessment": {}
         }
     
     def _convert_to_snake_case(self, key: str) -> str:
@@ -659,7 +746,7 @@ CRITICAL: Return ONLY valid JSON matching the exact structure specified. No addi
         search_jobs: bool = True,
         location: str = "India"
     ) -> Dict[str, Any]:
-        """Analyze resume with guaranteed standard JSON format and optional job search"""
+        """Analyze resume with role-specific evaluation and optional job search"""
         try:
             role_context = target_role or "general position"
             word_count = len(resume_text.split())
@@ -672,6 +759,10 @@ CRITICAL: Return ONLY valid JSON matching the exact structure specified. No addi
             
             # Initialize response with standard structure
             response = self._get_standard_response_template(role_context, word_count)
+            
+            # Run role mismatch check first (lightweight, fast)
+            logger.info(f"Running role fit check for target role: {role_context}")
+            mismatch_info = await self._check_role_mismatch(resume_text, role_context)
             
             # Run resume analysis and job search in parallel if needed
             if search_jobs and target_role:
@@ -708,6 +799,23 @@ CRITICAL: Return ONLY valid JSON matching the exact structure specified. No addi
                 logger.warning(f"Structured parsing failed, using fallback: {parse_error}")
                 self._populate_fallback_response(response, analysis_result, word_count, role_context)
             
+            # Attach role fit assessment to response
+            response["role_fit_assessment"] = {
+                "target_role": role_context,
+                "is_relevant": mismatch_info.get("is_relevant", True),
+                "compatibility": mismatch_info.get("compatibility", "Unknown"),
+                "candidate_background": mismatch_info.get("candidate_background", ""),
+                "target_role_requirements": mismatch_info.get("target_role_requirements", ""),
+                "mismatch_reason": mismatch_info.get("mismatch_reason", ""),
+                "estimated_score_range": mismatch_info.get("estimated_score_range", ""),
+                "note": (
+                    "⚠️ This score reflects fit with the specified target role, not overall resume quality. "
+                    "The same resume may score much higher for a role that matches the candidate's background."
+                    if not mismatch_info.get("is_relevant", True)
+                    else "Score reflects fit with the specified target role."
+                )
+            }
+
             # Add job listings if available
             if job_listings:
                 response["job_listings"] = {
@@ -750,7 +858,7 @@ CRITICAL: Return ONLY valid JSON matching the exact structure specified. No addi
             "overall_assessment": {
                 "score_percentage": analysis.overall_score,
                 "level": analysis.recommendation_level,
-                "description": f"AI-determined resume quality: {analysis.overall_score}%",
+                "description": f"Role-fit score for '{target_role}': {analysis.overall_score}%",
                 "recommendation": analysis.recommendation_level
             }
         }
@@ -824,7 +932,7 @@ CRITICAL: Return ONLY valid JSON matching the exact structure specified. No addi
                     response["executive_summary"]["overall_assessment"] = {
                         "score_percentage": parsed_data.get("overall_score", 0),
                         "level": parsed_data.get("recommendation_level", "Unknown"),
-                        "description": f"AI-determined resume quality: {parsed_data.get('overall_score', 0)}%",
+                        "description": f"Role-fit score for '{target_role}': {parsed_data.get('overall_score', 0)}%",
                         "recommendation": parsed_data.get("recommendation_level", "Unknown")
                     }
                 
@@ -882,8 +990,8 @@ async def analyze_resume(
     location: str = Form("India", description="Location for job search")
 ):
     """
-    Comprehensive resume analysis with guaranteed standard JSON output and job search integration.
-    Includes a three-layer validation gate that rejects non-resume documents before analysis runs.
+    Comprehensive resume analysis with role-specific scoring, honest mismatch detection,
+    and guaranteed standard JSON output. Includes three-layer validation and job search integration.
     """
     start_time = asyncio.get_event_loop().time()
     
@@ -976,6 +1084,7 @@ async def analyze_resume(
                 "target_role": target_role or "general position",
                 "overall_score": analysis_result.get("ai_insights", {}).get("overall_score", 0),
                 "recommendation_level": analysis_result.get("ai_insights", {}).get("recommendation_level", "Unknown"),
+                "role_compatibility": analysis_result.get("role_fit_assessment", {}).get("compatibility", "Unknown"),
                 "analysis_result": analysis_result,
                 "uploaded_at": datetime.now().isoformat(),
                 "validation_method": validation_result.method,
@@ -1017,8 +1126,6 @@ async def get_user_analyses(username: str):
 async def get_analysis(username: str, analysis_id: str):
     """Get a specific analysis by ID for a user"""
     try:
-        # Since shared_database doesn't have a direct method to get by ID,
-        # we need to fetch all and filter
         analyses = shared_db.get_user_resume_analyses(username)
         for analysis in analyses:
             if analysis.get("analysis_id") == analysis_id:
@@ -1035,7 +1142,6 @@ async def get_analysis(username: str, analysis_id: str):
 async def delete_analysis(username: str, analysis_id: str):
     """Delete a specific analysis"""
     try:
-        # Use shared_database's delete_interaction method
         shared_db.delete_interaction(username, "resume_analyzer", analysis_id)
         return {"message": f"Analysis {analysis_id} deleted successfully for user {username}"}
     except Exception as e:
@@ -1046,7 +1152,6 @@ async def delete_analysis(username: str, analysis_id: str):
 async def health_check():
     """Health check with comprehensive features display"""
     try:
-        # Get database stats
         all_users = shared_db.get_all_users()
         all_analyses = []
         analyses_by_user = {}
@@ -1059,13 +1164,17 @@ async def health_check():
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "service": "AI Resume Analyzer with Comprehensive Features",
-            "version": "4.0.0",
+            "service": "AI Resume Analyzer with Role-Specific Analysis",
+            "version": "5.0.0",
             "features": {
                 "three_layer_validation": "✅",
                 "llm_document_classifier": "✅",
                 "heuristic_validator": "✅",
                 "llm_validator": "✅",
+                "role_specific_analysis": "✅",
+                "honest_scoring": "✅",
+                "mismatch_detection": "✅",
+                "role_fit_assessment": "✅",
                 "resume_analysis": "✅",
                 "job_search_integration": "✅",
                 "ats_scoring": "✅",
@@ -1092,6 +1201,18 @@ async def health_check():
                 "layer2": "Heuristic Validator - Fast keyword-based scoring",
                 "layer3": "LLM Validator - Deep analysis for ambiguous cases"
             },
+            "role_specific_scoring": {
+                "description": "Scores now reflect fit with the TARGET ROLE, not generic resume quality",
+                "mismatch_detection": "Pre-analysis role-fit check runs before full analysis",
+                "honest_scoring_bands": {
+                    "0-20": "Completely mismatched background",
+                    "21-40": "Severe mismatch, very few transferable skills",
+                    "41-55": "Partial mismatch, some transferable soft skills",
+                    "56-70": "Moderate fit, lacks key role requirements",
+                    "71-85": "Good fit, meets most requirements",
+                    "86-100": "Excellent fit, strong match for the role"
+                }
+            },
             "database": {
                 "type": "external_api",
                 "url": EXTERNAL_DB_API_URL,
@@ -1110,6 +1231,9 @@ async def health_check():
             "langchain_version": "Latest (LCEL)",
             "guarantees": [
                 "✅ Non-resume documents rejected before analysis",
+                "✅ Role-specific strengths and weaknesses only",
+                "✅ Honest scores that reflect actual role fit",
+                "✅ Mismatch detection with clear explanation",
                 "✅ Consistent JSON structure every time",
                 "✅ All standard fields present",
                 "✅ Snake case field naming in detailed_scoring",
@@ -1133,18 +1257,31 @@ async def health_check():
 async def root():
     """Root endpoint with comprehensive feature listing"""
     return {
-        "service": "AI Resume Analyzer with Comprehensive Features",
-        "version": "4.0.0",
-        "description": "AI resume analysis with three-layer validation and comprehensive feature set",
+        "service": "AI Resume Analyzer with Role-Specific Analysis",
+        "version": "5.0.0",
+        "description": "AI resume analysis with three-layer validation, role-specific scoring, and honest mismatch detection",
+        "what_changed_in_v5": {
+            "problem_fixed": "Previously the analyzer gave high scores and generic strengths regardless of role fit",
+            "fix_1": "System prompt now enforces strict role-specific evaluation for ALL analysis sections",
+            "fix_2": "Added pre-analysis role-fit check (_check_role_mismatch) that runs before full analysis",
+            "fix_3": "Added role_fit_assessment block in every response with compatibility rating and mismatch explanation",
+            "fix_4": "Honest scoring bands defined — a CS resume for Dancer role now correctly scores 10-25%",
+            "fix_5": "Strengths now only list skills RELEVANT to the target role",
+            "fix_6": "Primary weakness is now the background mismatch itself when roles don't align"
+        },
         "features": {
+            "role_specific_analysis": "✅ All strengths, weaknesses, and scores tied to target role",
+            "honest_scoring": "✅ Low score for mismatched roles, high for matching ones",
+            "mismatch_detection": "✅ Pre-analysis check detects role-background mismatch",
+            "role_fit_assessment": "✅ Dedicated block in response explaining compatibility",
             "validation_pipeline": "✅ Three-layer validation (LLM classifier + heuristic + LLM validator)",
             "resume_analysis": "✅ Complete resume analysis with ATS scoring",
             "job_search": "✅ Integrated job search with realistic listings",
             "scoring_system": "✅ Multi-category scoring with detailed breakdowns",
-            "strengths_analysis": "✅ Top 5 strengths with ATS benefits",
-            "weaknesses_analysis": "✅ Top 5 weaknesses with fix priorities",
-            "improvement_plan": "✅ Prioritized improvement recommendations",
-            "job_market_analysis": "✅ Role compatibility and market positioning",
+            "strengths_analysis": "✅ Role-relevant strengths only",
+            "weaknesses_analysis": "✅ Mismatch-first weaknesses with fix priorities",
+            "improvement_plan": "✅ Role-specific actionable recommendations",
+            "job_market_analysis": "✅ Honest role compatibility and market positioning",
             "caching": "✅ Content-based caching for consistent results",
             "database": "✅ Shared database integration",
             "user_tracking": "✅ Per-user analysis storage and retrieval",
@@ -1156,12 +1293,12 @@ async def root():
         "endpoints": {
             "/analyze-resume": {
                 "method": "POST",
-                "description": "Comprehensive analysis with three-layer validation",
+                "description": "Role-specific analysis with three-layer validation",
                 "content_type": "multipart/form-data",
                 "fields": {
                     "file": "PDF file (required)",
                     "username": "string (required) - User identifier",
-                    "target_role": "string (optional)",
+                    "target_role": "string (optional) - Critical for role-specific scoring",
                     "search_jobs": "boolean (default: true)",
                     "location": "string (default: India)"
                 }
@@ -1181,38 +1318,37 @@ async def root():
             "/health": {
                 "method": "GET",
                 "description": "Service health check with features"
-            },
-            "/docs": {
-                "method": "GET",
-                "description": "API documentation"
             }
         },
-        "validation_pipeline_details": [
-            "Layer 1: LLM Document Classifier - Quick pre-screening (catches invoices, forms, job descriptions)",
-            "Layer 2: Heuristic Validator - Fast keyword-based scoring with weighted signals",
-            "Layer 3: LLM Validator - Deep analysis only for ambiguous cases"
-        ],
-        "output_guarantees": [
-            "Consistent JSON structure",
-            "All fields always present",
-            "Snake case naming in detailed_scoring",
-            "Frontend-compatible format",
-            "Deterministic for identical inputs",
-            "Username always included in response",
-            "Analysis ID for retrieval"
-        ]
+        "scoring_guide": {
+            "0-20":   "Completely mismatched background — no relevant experience for target role",
+            "21-40":  "Severe mismatch — only very minor transferable skills",
+            "41-55":  "Partial mismatch — transferable soft skills but missing core requirements",
+            "56-70":  "Moderate fit — some relevant skills but lacks key requirements",
+            "71-85":  "Good fit — meets most requirements with minor gaps",
+            "86-100": "Excellent fit — strong match for the target role"
+        }
     }
 
 if __name__ == "__main__":
     import uvicorn
     print("=" * 70)
-    print("🚀 Starting AI Resume Analyzer with Comprehensive Features")
+    print("🚀 Starting AI Resume Analyzer v5.0 — Role-Specific Analysis")
     print("=" * 70)
     print(f"📊 Database: External API ({EXTERNAL_DB_API_URL})")
     print(f"🔑 OpenAI: {'✅ Configured' if openai_api_key else '❌ Not configured'}")
     print(f"🔧 Analyzer: {'✅ Ready' if high_perf_analyzer else '❌ Not available'}")
-    print(f"🎯 Version: 4.0.0")
-    print(f"💬 Features:")
+    print(f"🎯 Version: 5.0.0")
+    print(f"")
+    print(f"🆕 What's new in v5.0:")
+    print(f"   • Role-Specific Scoring: ✅  (scores now reflect TARGET ROLE fit)")
+    print(f"   • Honest Mismatch Detection: ✅  (CS resume for Dancer = low score)")
+    print(f"   • Role Fit Assessment block: ✅  (in every API response)")
+    print(f"   • Role-only Strengths: ✅  (no more generic technical skill praise)")
+    print(f"   • Mismatch-first Weaknesses: ✅  (primary gap called out clearly)")
+    print(f"   • Role-specific Improvement Plan: ✅")
+    print(f"")
+    print(f"💬 Core Features:")
     print(f"   • Three-Layer Validation: ✅")
     print(f"   • LLM Document Classifier: ✅")
     print(f"   • Heuristic Validator: ✅")
@@ -1220,25 +1356,16 @@ if __name__ == "__main__":
     print(f"   • Resume Analysis: ✅")
     print(f"   • Job Search Integration: ✅")
     print(f"   • ATS Scoring: ✅")
-    print(f"   • Strengths Analysis: ✅")
-    print(f"   • Weaknesses Analysis: ✅")
-    print(f"   • Improvement Plan: ✅")
-    print(f"   • Job Market Analysis: ✅")
-    print(f"   • Quantified Scoring: ✅")
-    print(f"   • Detailed Breakdown: ✅")
     print(f"   • Caching Mechanism: ✅")
     print(f"   • Shared Database: ✅")
     print(f"   • User Tracking: ✅")
-    print(f"   • Per-User Analyses: ✅")
     print(f"   • Analysis History: ✅")
     print(f"   • PDF Extraction: ✅")
     print(f"   • Error Handling: ✅")
-    print(f"   • Performance Optimization: ✅")
     print(f"   • Consistent JSON Output: ✅")
-    print(f"   • Snake Case Naming: ✅")
-    print(f"   • Deterministic Output: ✅")
-    print(f"🔗 API: http://localhost:8000")
-    print(f"📚 Docs: http://localhost:8000/docs")
+    print(f"")
+    print(f"🔗 API: http://localhost:8002")
+    print(f"📚 Docs: http://localhost:8002/docs")
     print("=" * 70)
     
     uvicorn.run(app, host="127.0.0.1", port=8002, log_level="info")
