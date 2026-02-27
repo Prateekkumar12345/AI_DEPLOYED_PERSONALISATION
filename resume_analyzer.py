@@ -175,6 +175,144 @@ class JobListing(BaseModel):
     job_requirements: str = Field(description="Required skills and qualifications")
     application_url: Optional[str] = Field(description="Link to apply")
 
+# ===== LAYER 0 — IMAGE-BASED PDF DETECTION =====
+
+class PDFTypeCheckResult(BaseModel):
+    """
+    Result of the image-PDF detection check.
+    Distinguishes text-based PDFs from scanned/photo PDFs that have no text layer.
+    """
+    is_image_pdf: bool
+    confidence: str       # "high" | "medium"
+    reason: str
+    text_char_count: int
+    page_count: int
+    image_page_count: int
+    text_page_count: int
+
+
+class PDFTypeChecker:
+    """
+    Zero-cost (no API calls) detector that identifies whether a PDF is
+    text-based or image/scanned.
+    """
+
+    # Pages with fewer extractable characters than this are suspicious
+    MIN_CHARS_PER_PAGE: int = 50
+
+    # Fraction of total pages that must look like image pages before we reject
+    IMAGE_PAGE_RATIO_THRESHOLD: float = 0.6
+
+    @staticmethod
+    def _page_has_embedded_images(page) -> bool:
+        """
+        Return True if the PDF page's /Resources dictionary contains at least
+        one /XObject of subtype /Image.
+        """
+        try:
+            resources = page.get("/Resources")
+            if not resources:
+                return False
+            xobjects = resources.get("/XObject")
+            if not xobjects:
+                return False
+            for key in xobjects:
+                obj = xobjects[key].get_object()
+                if obj.get("/Subtype") == "/Image":
+                    return True
+        except Exception:
+            pass
+        return False
+
+    @classmethod
+    def check(cls, pdf_bytes: bytes) -> PDFTypeCheckResult:
+        """
+        Inspect the raw PDF bytes and return a PDFTypeCheckResult.
+        Designed to be called inside a ThreadPoolExecutor (blocking I/O).
+        """
+        try:
+            pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
+            page_count = len(pdf_reader.pages)
+
+            if page_count == 0:
+                return PDFTypeCheckResult(
+                    is_image_pdf=False,
+                    confidence="medium",
+                    reason="PDF has no pages — cannot determine type.",
+                    text_char_count=0,
+                    page_count=0,
+                    image_page_count=0,
+                    text_page_count=0,
+                )
+
+            total_chars = 0
+            image_page_count = 0
+            text_page_count = 0
+
+            for page in pdf_reader.pages:
+                try:
+                    page_text = page.extract_text() or ""
+                    char_count = len(page_text.strip())
+                    total_chars += char_count
+
+                    has_image = cls._page_has_embedded_images(page)
+
+                    # Image page = almost no text AND contains an embedded image
+                    if char_count < cls.MIN_CHARS_PER_PAGE and has_image:
+                        image_page_count += 1
+                    else:
+                        text_page_count += 1
+
+                except Exception:
+                    # Cannot read the page at all — treat conservatively as image
+                    image_page_count += 1
+
+            image_ratio = image_page_count / page_count if page_count > 0 else 0
+
+            if image_ratio >= cls.IMAGE_PAGE_RATIO_THRESHOLD:
+                return PDFTypeCheckResult(
+                    is_image_pdf=True,
+                    confidence="high",
+                    reason=(
+                        f"{image_page_count} out of {page_count} page(s) appear to be scanned "
+                        f"images ({image_ratio:.0%} of the document). No extractable text layer "
+                        f"was found. Please upload a text-based PDF exported directly from a word "
+                        f"processor (Word, Google Docs, LaTeX). If you only have a scanned copy, "
+                        f"run OCR on it first and re-upload."
+                    ),
+                    text_char_count=total_chars,
+                    page_count=page_count,
+                    image_page_count=image_page_count,
+                    text_page_count=text_page_count,
+                )
+
+            return PDFTypeCheckResult(
+                is_image_pdf=False,
+                confidence="high",
+                reason=(
+                    f"PDF contains extractable text ({total_chars} characters across "
+                    f"{text_page_count} text page(s))."
+                ),
+                text_char_count=total_chars,
+                page_count=page_count,
+                image_page_count=image_page_count,
+                text_page_count=text_page_count,
+            )
+
+        except Exception as e:
+            logger.error(f"PDFTypeChecker error: {e}")
+            # On unexpected failure, allow processing to continue
+            return PDFTypeCheckResult(
+                is_image_pdf=False,
+                confidence="medium",
+                reason=f"PDF type check encountered an error ({e}). Proceeding with extraction.",
+                text_char_count=0,
+                page_count=0,
+                image_page_count=0,
+                text_page_count=0,
+            )
+
+
 # ===== DOCUMENT CLASSIFICATION =====
 
 class DocumentClassificationResult(BaseModel):
@@ -477,38 +615,30 @@ class ResumeValidator:
 # ===== PDF EXTRACTION =====
 
 class OptimizedPDFExtractor:
-    """Optimized PDF text extraction"""
-    
+    """Optimized PDF text extraction — works directly from pre-read bytes."""
+
     @staticmethod
-    async def extract_text_from_pdf(uploaded_file) -> Optional[str]:
+    def extract_text_from_bytes(pdf_bytes: bytes) -> Optional[str]:
+        """
+        Synchronous extraction — call inside a ThreadPoolExecutor.
+        Accepts raw bytes so the upload stream only needs to be read once.
+        """
         try:
-            uploaded_file.seek(0)
-            content = await uploaded_file.read()
-            
-            def process_pdf(content_bytes):
-                pdf_file = io.BytesIO(content_bytes)
-                pdf_reader = PdfReader(pdf_file)
-                
-                extracted_text = ""
-                for page_num, page in enumerate(pdf_reader.pages):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text and page_text.strip():
-                            extracted_text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
-                    except Exception as page_error:
-                        logger.warning(f"Error extracting page {page_num + 1}: {str(page_error)}")
-                        continue
-                
-                return extracted_text.strip()
-            
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                extracted_text = await loop.run_in_executor(pool, process_pdf, content)
-            
-            return extracted_text if extracted_text else None
-            
+            pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
+            extracted_text = ""
+            for page_num, page in enumerate(pdf_reader.pages):
+                try:
+                    page_text = page.extract_text()
+                    if page_text and page_text.strip():
+                        extracted_text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
+                except Exception as page_error:
+                    logger.warning(f"Error extracting page {page_num + 1}: {str(page_error)}")
+                    continue
+            result = extracted_text.strip()
+            logger.info(f"Extracted {len(result)} characters from PDF bytes")
+            return result if result else None
         except Exception as e:
-            logger.error(f"PDF extraction error: {str(e)}")
+            logger.error(f"PDF text extraction error: {str(e)}")
             return None
 
 # ===== JOB SEARCH =====
@@ -703,7 +833,9 @@ Respond with JSON only — no extra text:
         """Returns the standard response structure"""
         return {
             "success": True,
-            "analysis_method": "AI-Powered LangChain Analysis with Three-Layer Validation",
+            "analysis_status": True,
+            "failure_reason": None,
+            "analysis_method": "AI-Powered LangChain Analysis with Four-Layer Validation",
             "resume_metadata": {
                 "word_count": word_count,
                 "validation_message": "Comprehensive AI analysis completed",
@@ -961,6 +1093,12 @@ Respond with JSON only — no extra text:
         """Generate error response maintaining standard structure"""
         response = self._get_standard_response_template(target_role or "unknown", word_count)
         response["success"] = False
+        response["analysis_status"] = False
+        response["failure_reason"] = {
+            "type": "analysis_error",
+            "message": f"AI analysis failed: {error_message}",
+            "action": "Please try again. If the problem persists, check your PDF or contact support."
+        }
         response["error"] = f"AI analysis failed: {error_message}"
         response["resume_metadata"]["validation_message"] = "Analysis encountered an error"
         if username:
@@ -969,7 +1107,6 @@ Respond with JSON only — no extra text:
 
 # ===== INITIALIZE COMPONENTS =====
 
-pdf_extractor = OptimizedPDFExtractor()
 high_perf_analyzer = None
 
 if openai_api_key:
@@ -991,79 +1128,229 @@ async def analyze_resume(
 ):
     """
     Comprehensive resume analysis with role-specific scoring, honest mismatch detection,
-    and guaranteed standard JSON output. Includes three-layer validation and job search integration.
+    and guaranteed standard JSON output.
+
+    VALIDATION PIPELINE (4 layers):
+      Layer 0 – Image PDF check     : Rejects scanned/photo PDFs with no text layer (no API cost)
+      Layer 1 – LLM classifier      : Catches invoices, forms, job descriptions
+      Layer 2 – Heuristic validator : Weighted keyword scoring (no API cost)
+      Layer 3 – LLM validator       : Only for ambiguous cases from Layer 2
+
+    Every response includes:
+      - analysis_status: true/false  (was analysis completed successfully?)
+      - failure_reason: null or object describing why it failed
     """
     start_time = asyncio.get_event_loop().time()
-    
+
+    def _make_failure_response(
+        error_type: str,
+        message: str,
+        action: str,
+        extra: Dict[str, Any] = None,
+        status_code: int = 400
+    ):
+        """
+        Build a consistent JSON error response with analysis_status: false.
+        Raises HTTPException so FastAPI returns the proper HTTP status code.
+        """
+        body = {
+            "analysis_status": False,
+            "success": False,
+            "failure_reason": {
+                "type": error_type,
+                "message": message,
+                "action": action,
+            },
+        }
+        if extra:
+            body["failure_reason"].update(extra)
+        raise HTTPException(status_code=status_code, detail=body)
+
     try:
         if not high_perf_analyzer:
-            raise HTTPException(status_code=500, detail="AI analyzer not initialized.")
-        
-        if not file.content_type or "pdf" not in file.content_type.lower():
-            raise HTTPException(status_code=400, detail="Only PDF files are supported")
-        
-        # Extract PDF text
-        resume_text = await pdf_extractor.extract_text_from_pdf(file)
-        
-        if not resume_text:
-            raise HTTPException(status_code=400, detail="Failed to extract text from PDF.")
-        
-        if len(resume_text.strip()) < 100:
-            raise HTTPException(status_code=400, detail="Resume content too short.")
+            _make_failure_response(
+                "service_unavailable",
+                "AI analyzer is not initialized. The service may be misconfigured.",
+                "Contact the administrator or check that OPENAI_API_KEY is set.",
+                status_code=500,
+            )
 
-        # THREE-LAYER VALIDATION PIPELINE
-        # Layer 1: Document Classification
-        logger.info("Running Layer 1: Document classification")
-        classification_result = await high_perf_analyzer.document_classifier.classify(resume_text)
-        
-        if classification_result.label == "non_resume" and classification_result.confidence >= 0.7:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "not_a_resume",
-                    "message": "The uploaded document does not appear to be a resume/CV.",
-                    "validation": {
-                        "is_resume": False,
-                        "confidence": "high",
-                        "method": "llm_classifier",
-                        "reason": classification_result.reason,
-                        "classifier_confidence": classification_result.confidence,
+        if not file.content_type or "pdf" not in file.content_type.lower():
+            _make_failure_response(
+                "invalid_file_type",
+                "Only PDF files are accepted. Please upload a .pdf resume.",
+                "Convert your resume to PDF format and try again.",
+            )
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Read the upload stream ONCE. All subsequent steps use these bytes.
+        # ─────────────────────────────────────────────────────────────────────
+        pdf_bytes = await file.read()
+
+        if not pdf_bytes:
+            _make_failure_response(
+                "empty_file",
+                "The uploaded file is empty.",
+                "Make sure the file is not corrupted and try uploading again.",
+            )
+
+        logger.info(f"Received PDF upload: {len(pdf_bytes):,} bytes for user: {username}")
+
+        event_loop = asyncio.get_event_loop()
+
+        # ═════════════════════════════════════════════════════════════════════
+        # LAYER 0 — IMAGE / SCANNED PDF DETECTION (zero API cost)
+        # ═════════════════════════════════════════════════════════════════════
+        logger.info("Running Layer 0: Image/scanned PDF detection")
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            pdf_type_result: PDFTypeCheckResult = await event_loop.run_in_executor(
+                pool, PDFTypeChecker.check, pdf_bytes
+            )
+
+        logger.info(
+            f"Layer 0 — is_image_pdf: {pdf_type_result.is_image_pdf} | "
+            f"pages: {pdf_type_result.page_count} | "
+            f"image_pages: {pdf_type_result.image_page_count} | "
+            f"text_chars: {pdf_type_result.text_char_count}"
+        )
+
+        if pdf_type_result.is_image_pdf:
+            _make_failure_response(
+                "image_pdf_detected",
+                (
+                    "Your PDF appears to be a scanned image or photograph and does not "
+                    "contain a searchable text layer. This analyser requires a text-based PDF."
+                ),
+                (
+                    "Re-export your resume directly from a word processor "
+                    "(Microsoft Word → Save As PDF, Google Docs → Download as PDF). "
+                    "If you only have a scanned copy, run OCR on it first using Adobe Acrobat "
+                    "('Recognise Text') or a free online OCR tool, then re-upload."
+                ),
+                extra={
+                    "validation_layer": "0 — image_pdf_check",
+                    "confidence": pdf_type_result.confidence,
+                    "detail": pdf_type_result.reason,
+                    "stats": {
+                        "page_count": pdf_type_result.page_count,
+                        "image_page_count": pdf_type_result.image_page_count,
+                        "text_page_count": pdf_type_result.text_page_count,
+                        "extractable_characters": pdf_type_result.text_char_count,
                     },
                 },
             )
-        
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Extract text from the PDF bytes
+        # ─────────────────────────────────────────────────────────────────────
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            resume_text: Optional[str] = await event_loop.run_in_executor(
+                pool, OptimizedPDFExtractor.extract_text_from_bytes, pdf_bytes
+            )
+
+        if not resume_text:
+            _make_failure_response(
+                "text_extraction_failed",
+                "Could not extract text from the PDF even though it passed the image check.",
+                (
+                    "The file may be encrypted, password-protected, or corrupted. "
+                    "Try re-exporting it from your word processor."
+                ),
+            )
+
+        if len(resume_text.strip()) < 50:
+            logger.warning(
+                f"Layer 0 passed but only {len(resume_text.strip())} characters extracted — "
+                "likely a non-standard image PDF. Rejecting."
+            )
+            _make_failure_response(
+                "image_pdf_detected",
+                (
+                    "Your PDF appears to be a scanned image or photograph. "
+                    "Only a very small amount of text could be extracted, which is not enough for analysis."
+                ),
+                (
+                    "Re-export your resume from a word processor as a text-based PDF, "
+                    "or run OCR on your scanned copy and re-upload."
+                ),
+                extra={
+                    "validation_layer": "0b — post_extraction_image_check",
+                    "confidence": "high",
+                    "detail": (
+                        f"Only {len(resume_text.strip())} characters could be extracted. "
+                        "This strongly indicates the PDF contains images rather than selectable text."
+                    ),
+                    "stats": {
+                        "extractable_characters": len(resume_text.strip()),
+                        "page_count": pdf_type_result.page_count,
+                        "image_page_count": pdf_type_result.image_page_count,
+                        "text_page_count": pdf_type_result.text_page_count,
+                    },
+                },
+            )
+
+        logger.info(f"Text extraction complete: {len(resume_text):,} characters")
+
+        # ═════════════════════════════════════════════════════════════════════
+        # LAYER 1 — LLM DOCUMENT CLASSIFIER
+        # ═════════════════════════════════════════════════════════════════════
+        logger.info("Running Layer 1: Document classification")
+        classification_result = await high_perf_analyzer.document_classifier.classify(resume_text)
+
+        if classification_result.label == "non_resume" and classification_result.confidence >= 0.7:
+            _make_failure_response(
+                "not_a_resume",
+                (
+                    "The uploaded document does not appear to be a resume or CV. "
+                    "Please upload a valid resume in PDF format."
+                ),
+                "Ensure you are uploading your personal resume/CV, not a job description, invoice, or other document.",
+                extra={
+                    "validation_layer": "1 — llm_classifier",
+                    "classifier_label": classification_result.label,
+                    "classifier_confidence": classification_result.confidence,
+                    "detail": classification_result.reason,
+                },
+            )
+
         logger.info(
             f"Layer 1 result: {classification_result.label} "
             f"(confidence: {classification_result.confidence:.2f})"
         )
-        
-        # Layer 2 & 3: Heuristic + LLM Validation
+
+        # ═════════════════════════════════════════════════════════════════════
+        # LAYERS 2 & 3 — HEURISTIC + LLM VALIDATION
+        # ═════════════════════════════════════════════════════════════════════
         logger.info("Running Layer 2/3: Heuristic + LLM validation")
         validation_result = await high_perf_analyzer.resume_validator.validate(resume_text)
 
         if not validation_result.is_resume:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "not_a_resume",
-                    "message": "The uploaded document does not appear to be a resume/CV.",
-                    "validation": {
-                        "is_resume": validation_result.is_resume,
-                        "confidence": validation_result.confidence,
-                        "method": validation_result.method,
-                        "reason": validation_result.reason,
-                        "classifier_label": classification_result.label,
-                        "classifier_confidence": classification_result.confidence,
-                    },
+            _make_failure_response(
+                "not_a_resume",
+                (
+                    "The uploaded document does not appear to be a resume or CV. "
+                    "Please upload a valid resume in PDF format."
+                ),
+                "Ensure you are uploading your personal resume/CV, not a job description, invoice, or other document.",
+                extra={
+                    "validation_layer": "2/3 — heuristic+llm",
+                    "validation_method": validation_result.method,
+                    "validation_confidence": validation_result.confidence,
+                    "detail": validation_result.reason,
+                    "classifier_label": classification_result.label,
+                    "classifier_confidence": classification_result.confidence,
                 },
             )
 
         logger.info(
-            f"All validation layers passed (final method={validation_result.method}, "
+            f"All validation layers passed (method={validation_result.method}, "
             f"confidence={validation_result.confidence}). Proceeding to analysis."
         )
-        
-        # Perform analysis
+
+        # ═════════════════════════════════════════════════════════════════════
+        # ANALYSIS
+        # ═════════════════════════════════════════════════════════════════════
         analysis_result = await asyncio.wait_for(
             high_perf_analyzer.analyze_resume_with_jobs(
                 resume_text=resume_text,
@@ -1074,6 +1361,10 @@ async def analyze_resume(
             ),
             timeout=60.0
         )
+
+        # Ensure analysis_status is always present in successful responses
+        analysis_result["analysis_status"] = analysis_result.get("success", True)
+        analysis_result["failure_reason"] = None
 
         # Save to shared database
         analysis_id = str(uuid.uuid4())
@@ -1091,22 +1382,44 @@ async def analyze_resume(
                 "validation_confidence": validation_result.confidence
             }
         )
-        
+
         analysis_result["analysis_id"] = analysis_id
         analysis_result["saved_to_database"] = True
-        
+
         processing_time = asyncio.get_event_loop().time() - start_time
         logger.info(f"Analysis completed in {processing_time:.2f}s for user: {username}")
-        
+
         return analysis_result
-        
+
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=408, detail="Analysis timeout.")
+        raise HTTPException(
+            status_code=408,
+            detail={
+                "analysis_status": False,
+                "success": False,
+                "failure_reason": {
+                    "type": "timeout",
+                    "message": "The analysis took too long and was cancelled.",
+                    "action": "Please try again. If the problem persists, try with a shorter resume.",
+                },
+            },
+        )
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Analysis endpoint error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "analysis_status": False,
+                "success": False,
+                "failure_reason": {
+                    "type": "internal_error",
+                    "message": f"An unexpected error occurred: {str(e)}",
+                    "action": "Please try again later or contact support.",
+                },
+            },
+        )
 
 @app.get("/user/{username}/analyses")
 async def get_user_analyses(username: str):
@@ -1167,6 +1480,10 @@ async def health_check():
             "service": "AI Resume Analyzer with Role-Specific Analysis",
             "version": "5.0.0",
             "features": {
+                "image_pdf_detection": "✅",
+                "four_layer_validation": "✅",
+                "analysis_status_field": "✅",
+                "failure_reason_field": "✅",
                 "three_layer_validation": "✅",
                 "llm_document_classifier": "✅",
                 "heuristic_validator": "✅",
@@ -1197,9 +1514,10 @@ async def health_check():
                 "deterministic_output": "✅"
             },
             "validation_pipeline": {
-                "layer1": "LLM Document Classifier - Quick pre-screening",
-                "layer2": "Heuristic Validator - Fast keyword-based scoring",
-                "layer3": "LLM Validator - Deep analysis for ambiguous cases"
+                "layer0": "Image/scanned PDF detection — rejects non-text PDFs (zero API cost, PyPDF2 XObject inspection)",
+                "layer1": "LLM Document Classifier - Quick pre-screening for non-resume documents",
+                "layer2": "Heuristic Validator - Fast weighted keyword scoring (zero API cost)",
+                "layer3": "LLM Validator - Deep analysis for ambiguous cases only"
             },
             "role_specific_scoring": {
                 "description": "Scores now reflect fit with the TARGET ROLE, not generic resume quality",
@@ -1229,20 +1547,23 @@ async def health_check():
             "openai_configured": bool(openai_api_key),
             "analyzer_available": bool(high_perf_analyzer),
             "langchain_version": "Latest (LCEL)",
-            "guarantees": [
-                "✅ Non-resume documents rejected before analysis",
-                "✅ Role-specific strengths and weaknesses only",
-                "✅ Honest scores that reflect actual role fit",
-                "✅ Mismatch detection with clear explanation",
-                "✅ Consistent JSON structure every time",
-                "✅ All standard fields present",
-                "✅ Snake case field naming in detailed_scoring",
-                "✅ Frontend-compatible format",
-                "✅ Optional job listings",
-                "✅ Deterministic output for identical resumes",
-                "✅ Per-user analysis tracking",
-                "✅ Full analysis history available"
-            ]
+                "guarantees": [
+                    "✅ Image/scanned PDFs detected and rejected before any API call",
+                    "✅ analysis_status: true/false in every response",
+                    "✅ failure_reason with type, message, and action when analysis_status is false",
+                    "✅ Non-resume documents rejected before analysis",
+                    "✅ Role-specific strengths and weaknesses only",
+                    "✅ Honest scores that reflect actual role fit",
+                    "✅ Mismatch detection with clear explanation",
+                    "✅ Consistent JSON structure every time",
+                    "✅ All standard fields present",
+                    "✅ Snake case field naming in detailed_scoring",
+                    "✅ Frontend-compatible format",
+                    "✅ Optional job listings",
+                    "✅ Deterministic output for identical resumes",
+                    "✅ Per-user analysis tracking",
+                    "✅ Full analysis history available"
+                ]
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -1258,8 +1579,15 @@ async def root():
     """Root endpoint with comprehensive feature listing"""
     return {
         "service": "AI Resume Analyzer with Role-Specific Analysis",
-        "version": "5.0.0",
-        "description": "AI resume analysis with three-layer validation, role-specific scoring, and honest mismatch detection",
+        "version": "5.1.0",
+        "description": "AI resume analysis with four-layer validation (incl. image PDF detection), role-specific scoring, honest mismatch detection, and analysis_status in every response",
+        "what_changed_in_v5_1": {
+            "new_1": "Layer 0 image PDF detection — scanned/photo PDFs are detected and rejected instantly, before any LLM call",
+            "new_2": "analysis_status: true/false field in every API response",
+            "new_3": "failure_reason object with type, message, and action in all error responses",
+            "new_4": "File bytes read once only — no double-consume, no seek() needed",
+            "new_5": "Post-extraction fallback image check for edge-case scanned PDFs",
+        },
         "what_changed_in_v5": {
             "problem_fixed": "Previously the analyzer gave high scores and generic strengths regardless of role fit",
             "fix_1": "System prompt now enforces strict role-specific evaluation for ALL analysis sections",
@@ -1270,11 +1598,19 @@ async def root():
             "fix_6": "Primary weakness is now the background mismatch itself when roles don't align"
         },
         "features": {
+            "image_pdf_detection": "✅ Layer 0 — scanned/photo PDFs rejected instantly (zero API cost)",
+            "analysis_status": "✅ analysis_status: true/false in every response",
+            "failure_reason": "✅ failure_reason with type, message, action when analysis_status is false",
             "role_specific_analysis": "✅ All strengths, weaknesses, and scores tied to target role",
             "honest_scoring": "✅ Low score for mismatched roles, high for matching ones",
             "mismatch_detection": "✅ Pre-analysis check detects role-background mismatch",
             "role_fit_assessment": "✅ Dedicated block in response explaining compatibility",
-            "validation_pipeline": "✅ Three-layer validation (LLM classifier + heuristic + LLM validator)",
+            "validation_pipeline": [
+            "Layer 0: Image PDF detection — rejects scanned/photo PDFs instantly (no API cost)",
+            "Layer 1: LLM document classifier — catches non-resume documents",
+            "Layer 2: Heuristic keyword validator — fast weighted scoring (no API cost)",
+            "Layer 3: LLM validator — only for ambiguous cases from Layer 2",
+        ],
             "resume_analysis": "✅ Complete resume analysis with ATS scoring",
             "job_search": "✅ Integrated job search with realistic listings",
             "scoring_system": "✅ Multi-category scoring with detailed breakdowns",
@@ -1333,12 +1669,18 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     print("=" * 70)
-    print("🚀 Starting AI Resume Analyzer v5.0 — Role-Specific Analysis")
+    print("🚀 Starting AI Resume Analyzer v5.1 — Four-Layer Validation + analysis_status")
     print("=" * 70)
     print(f"📊 Database: External API ({EXTERNAL_DB_API_URL})")
     print(f"🔑 OpenAI: {'✅ Configured' if openai_api_key else '❌ Not configured'}")
     print(f"🔧 Analyzer: {'✅ Ready' if high_perf_analyzer else '❌ Not available'}")
-    print(f"🎯 Version: 5.0.0")
+    print(f"🎯 Version: 5.1.0")
+    print(f"")
+    print(f"🆕 What's new in v5.1:")
+    print(f"   • Layer 0 Image PDF Detection: ✅  (scanned PDFs rejected before any LLM call)")
+    print(f"   • analysis_status field: ✅  (true/false in every response)")
+    print(f"   • failure_reason field: ✅  (type + message + action when status is false)")
+    print(f"   • Single file read: ✅  (bytes read once, reused across all layers)")
     print(f"")
     print(f"🆕 What's new in v5.0:")
     print(f"   • Role-Specific Scoring: ✅  (scores now reflect TARGET ROLE fit)")
