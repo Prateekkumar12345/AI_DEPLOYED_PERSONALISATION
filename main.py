@@ -897,30 +897,48 @@ Return ONLY the JSON array, no additional text."""
         context_parts.append("]")
         return "\n".join(context_parts)
     
+    # ============================
+    # Title generation only — topic-specific and uses full conversation context
+    # ============================
     def generate_conversation_title(self, message: str, chat_id: str) -> str:
-        """Generate conversation title"""
+        """Generate a topic-specific title from the conversation so each chat gets a unique title."""
         try:
-            messages = self.memory_manager.get_messages(chat_id, last_n=3)
-            context = " ".join([msg['content'][:100] for msg in messages])
-            
+            messages = self.memory_manager.get_messages(chat_id, last_n=8)
+            if not messages:
+                return "New Conversation"
+            transcript = "\n".join(
+                f"{'User' if m.get('role') == 'human' else 'Assistant'}: {(m.get('content') or '')[:120]}"
+                for m in messages if (m.get('content') or '').strip()
+            )
+            if not transcript.strip():
+                return "New Conversation"
+
             title_prompt = ChatPromptTemplate.from_messages([
-                ("system", "Generate a 3-8 word title for a conversation."),
-                ("human", f"Message: {message[:200]}\nContext: {context[:300]}\nTitle:")
+                (
+                    "system",
+                    (
+                        "You generate short 3-7 word conversation titles that reflect the actual topic discussed. "
+                        "Use the specific subject (e.g. 'BTech colleges in Karnataka', 'Resume feedback', 'IIT JEE prep'). "
+                        "Do NOT use generic titles like 'Academic Discussion', 'New Conversation', or 'College chat'. "
+                        "Return ONLY the title — no quotes, no extra text."
+                    ),
+                ),
+                ("human", "Conversation:\n{conversation}\n\nTitle:"),
             ])
-            
             title_chain = title_prompt | self.llm | StrOutputParser()
-            title = title_chain.invoke({})
-            
-            title = title.strip().replace('"', '').replace("'", "")
+            title = title_chain.invoke({"conversation": transcript})
+
+            title = (title or "").strip().replace('"', '').replace("'", "").strip(".")
+            if not title or title.lower() in ("academic discussion", "academic conversation", "new conversation"):
+                first_user = next((m.get("content", "") for m in messages if m.get("role") == "human"), "")
+                title = (first_user[:44] + "..." if len(first_user) > 44 else first_user) or "Academic Chat"
             if len(title) > 50:
                 title = title[:47] + "..."
-            
-            return title if title else "Academic Discussion"
-            
+            return title
         except Exception as e:
             logger.error(f"Error generating title: {e}")
             return "Academic Conversation"
-    
+
     def get_response(self, message: str, chat_id: str, username: str) -> Dict[str, Any]:
         """Main unified processing function - conversational, personalized, and context-aware"""
         timestamp = datetime.now().isoformat()
@@ -970,7 +988,11 @@ Return ONLY the JSON array, no additional text."""
             
             # Save AI response
             self.memory_manager.add_message(chat_id, username, 'ai', response, False)
-            
+            # Refresh title from conversation so it stays topic-specific
+            msg_count = len(self.memory_manager.get_messages(chat_id))
+            if msg_count >= 2 and (msg_count % 4 == 0 or (conversation_title or "").strip() == "New Conversation"):
+                conversation_title = self.generate_conversation_title(message, chat_id)
+                self.memory_manager.set_title(chat_id, username, conversation_title)
             return {
                 "response": response,
                 "is_recommendation": False,
@@ -1034,7 +1056,11 @@ Return ONLY the JSON array, no additional text."""
             
             # Save AI response to memory and database
             self.memory_manager.add_message(chat_id, username, 'ai', response, should_recommend)
-            
+            # Refresh title from conversation so it stays topic-specific
+            msg_count = len(self.memory_manager.get_messages(chat_id))
+            if msg_count >= 2 and (msg_count % 4 == 0 or (conversation_title or "").strip() == "New Conversation"):
+                conversation_title = self.generate_conversation_title(message, chat_id)
+                self.memory_manager.set_title(chat_id, username, conversation_title)
             # Trigger profile update occasionally (every 10 messages)
             if len(self.memory_manager.get_memory_context(chat_id)) % 10 == 0:
                 self.personalization.trigger_profile_update(username)
