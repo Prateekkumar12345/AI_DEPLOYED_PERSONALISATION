@@ -700,7 +700,7 @@ class HighPerformanceLangChainAnalyzer:
     def __init__(self, openai_api_key: str):
         self.llm = ChatOpenAI(
             api_key=openai_api_key,
-            model_name="gp-3.5-turbo-16k",
+            model_name="gpt-3.5-turbo-16k",
             temperature=0.0,
             max_tokens=4000,
             request_timeout=30
