@@ -700,7 +700,7 @@ class HighPerformanceLangChainAnalyzer:
     def __init__(self, openai_api_key: str):
         self.llm = ChatOpenAI(
             api_key=openai_api_key,
-            model_name="gpt-3.5-turbo-16k",
+            model_name="gp-3.5-turbo-16k",
             temperature=0.0,
             max_tokens=4000,
             request_timeout=30
@@ -1666,7 +1666,7 @@ async def root():
         }
     }
 
-if __name__ == "_main__":
+if __name__ == "__main__":
     import uvicorn
     print("=" * 70)
     print("🚀 Starting AI Resume Analyzer v5.1 — Four-Layer Validation + analysis_status")
