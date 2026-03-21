@@ -1666,7 +1666,7 @@ async def root():
         }
     }
 
-if __name__ == "__main__":
+if __name__ == "_main__":
     import uvicorn
     print("=" * 70)
     print("🚀 Starting AI Resume Analyzer v5.1 — Four-Layer Validation + analysis_status")
